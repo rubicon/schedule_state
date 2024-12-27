@@ -54,11 +54,12 @@ Create a `schedule_state` sensor:
 ```yaml
   - platform: schedule_state
     name: Some descriptive name
-    refresh: "6:00:00"                  # this is the default
-    default_state: default              # this is the default
-    icon: mdi:calendar-check            # this is the default
-    error_icon: mdi:calendar-alert      # this is the default
-    minutes_to_refresh_on_error: 5      # this is the default
+    # refresh: "6:00:00"                # this is the default
+    # default_state: default            # this is the default
+    # icon: mdi:calendar-check          # this is the default
+    # error_icon: mdi:calendar-alert    # this is the default
+    # minutes_to_refresh_on_error: 5    # this is the default
+    # allow_wrap: False                 # this is the default
 ```
 
 By default, the sensor returns the name provided as the `default_state`. Configuration is built up in layers of events.
@@ -68,13 +69,14 @@ All times are interpreted as belonging to the local timezone.
 
 The start and end times can be adjusted with an offset, in minutes, using the `start_offset`/`end_offset` settings.
 This helps define events such as "x minutes before sunrise", in a simpler way than using complicated templates.
+These offsets can also be specified as templates.
 
 This simple configuration will cause the sensor to report `sleep` or `awake` depending on the time of day.
 You can create automations that trigger on the sensor state. Or, you can use the value of the sensor state as a
 condition in your automations.
 
 Each state can have a custom icon.
-Pick any icon that you can find on [materialdesignicons.com](materialdesignicons.com) and prefix the name with `mdi:`.
+Pick any icon that you can find on [pictogrammers.com](https://pictogrammers.com/library/mdi/) and prefix the name with `mdi:`.
 Note: the last icon assigned to a state is used for all occurrences of that state.
 
 ```yaml
@@ -92,6 +94,30 @@ Note: the last icon assigned to a state is used for all occurrences of that stat
 ```
 
 If `start` is not provided, it defaults to the start of the day, and if `end` is not provided, it defaults to the end of the day.
+
+By default, it is required that end times are larger than start times. However, by setting the `allow_wrap` attribute to True, events
+can be made to "wrap" to the next day. This can be a more convenient or intuitive way to specify events that run from evening to morning.
+
+For example, the `sleep` state in the example could be specified as follows:
+
+```yaml
+    events:
+      - start: "22:30"
+        end: "5:30"
+        state: sleep
+        icon: mdi:sleep
+        allow_wrap: True
+      - start: "5:30"
+        end: "22:30"
+        state: awake
+        icon: mdi:walk
+```
+
+There can be some unexpected behaviour, however, when using conditions and templates in conjunction with this feature (see below).
+
+The `allow_wrap` setting can be specified at either the sensor level or for a particular event.
+
+Note: Make sure that times are quoted!
 
 ![schedule1][schedule1img]
 
@@ -126,6 +152,11 @@ weekends or [holidays](https://www.home-assistant.io/integrations/workday/).
             - sat
             - sun
 ```
+
+Note that Home Assistant will evaluate conditions based on the current time of day. In this particular example, the
+condition evaluates to true if the current time is between 0:00:00 on Saturday and 23:59:59 on Sunday.
+You will need to take this into account if you use the `allow_wrap` feature described above to conditionally
+wrap an event from Friday evening to Saturday morning, for example.
 
 Keep in mind that the evaluation order of the events is top-to-bottom, and all of them are evaluated. This means
 that if multiple events match the settings, it's the last one that "wins". For example, if you put this as your
@@ -385,7 +416,7 @@ If you want to contribute to this please read the [Contribution guidelines](CONT
 [forum]: https://community.home-assistant.io/
 [license-shield]: https://img.shields.io/github/license/aneeshd/schedule_state
 [maintenance-shield]: https://img.shields.io/badge/maintainer-aneeshd-blue.svg
-[releases-shield]: https://img.shields.io/github/release/custom-components/blueprint.svg
+[releases-shield]: https://img.shields.io/github/v/release/aneeshd/schedule_state.svg
 [releases]: https://github.com/aneeshd/schedule_state/releases
 [issues]: https://github.com/aneeshd/schedule_state/issues
 [schedule1img]: https://raw.githubusercontent.com/aneeshd/schedule_state/main/docs/schedule1.png

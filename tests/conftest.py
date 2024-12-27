@@ -1,4 +1,5 @@
 """Global fixtures for schedule_state integration."""
+
 # Fixtures allow you to replace functions with a Mock object. You can perform
 # many options via the Mock to reflect a particular behavior from the original
 # function that you want to see without going through the function's actual logic.
@@ -14,16 +15,20 @@
 #
 # See here for more info: https://docs.pytest.org/en/latest/fixture.html (note that
 # pytest includes fixtures OOB which you can use as defined on this page)
-from unittest.mock import patch
+from collections.abc import Generator
+import os
+from unittest.mock import AsyncMock, patch
 
+from homeassistant.const import BASE_PLATFORMS
 import pytest
+import pytest_asyncio
 
 pytest_plugins = "pytest_homeassistant_custom_component"
 
 
 # This fixture enables loading custom integrations in all tests.
 # Remove to enable selective use of this fixture
-@pytest.fixture(autouse=True)
+@pytest_asyncio.fixture(autouse=True)
 def auto_enable_custom_integrations(enable_custom_integrations):
     yield
 
@@ -34,16 +39,51 @@ def auto_enable_custom_integrations(enable_custom_integrations):
 @pytest.fixture(name="skip_notifications", autouse=True)
 def skip_notifications_fixture():
     """Skip notification calls."""
-    with patch("homeassistant.components.persistent_notification.async_create"), patch(
-        "homeassistant.components.persistent_notification.async_dismiss"
+    with (
+        patch("homeassistant.components.persistent_notification.async_create"),
+        patch("homeassistant.components.persistent_notification.async_dismiss"),
     ):
         yield
 
 
-# temporary workaround for bug in pytest_homeassistant_custom_component - mock_storage.mock_write_data
-# homeassistant.helpers.storage.Store._write_data does not seem to use the basic json.dumps function,
-# but rather homeassistant.helpers.json.JSONEncoder, which supports datetime
+@pytest.fixture
+def mock_setup_entry() -> Generator[AsyncMock]:
+    """Mock setting up a config entry."""
+    with patch(
+        "homeassistant.components.workday.async_setup_entry", return_value=True
+    ) as mock_setup:
+        yield mock_setup
+
+
+# https://github.com/home-assistant/core/blob/dev/tests/conftest.py
 @pytest.fixture(autouse=True)
-def hass_storage():
-    """Fixture to mock storage."""
-    yield {}
+def expected_lingering_tasks() -> bool:
+    """Temporary ability to bypass test failures.
+
+    Parametrize to True to bypass the pytest failure.
+    @pytest.mark.parametrize("expected_lingering_tasks", [True])
+
+    This should be removed when all lingering tasks have been cleaned up.
+    """
+    return False
+
+
+# https://github.com/home-assistant/core/blob/dev/tests/conftest.py
+@pytest.fixture(autouse=True)
+def expected_lingering_timers() -> bool:
+    """Temporary ability to bypass test failures.
+
+    Parametrize to True to bypass the pytest failure.
+    @pytest.mark.parametrize("expected_lingering_timers", [True])
+
+    This should be removed when all lingering timers have been cleaned up.
+    """
+    current_test = os.getenv("PYTEST_CURRENT_TEST")
+    if (
+        current_test
+        and current_test.startswith("tests/components/")
+        and current_test.split("/")[2] not in BASE_PLATFORMS
+    ):
+        # As a starting point, we ignore non-platform components
+        return True
+    return False

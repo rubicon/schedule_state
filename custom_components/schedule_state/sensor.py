@@ -1,7 +1,9 @@
 """
 A sensor that returns a string based on a defined schedule.
 """
+
 import asyncio
+from contextlib import suppress
 from dataclasses import dataclass
 from datetime import datetime, time, timedelta
 import hashlib
@@ -47,12 +49,12 @@ import portion as P
 import voluptuous as vol
 
 from .const import (
+    CONF_ALLOW_WRAP,
     CONF_COMMENT,
     CONF_DEFAULT_STATE,
     CONF_DURATION,
     CONF_END,
     CONF_END_OFFSET,
-    CONF_END_TEMPLATE,
     CONF_ERROR_ICON,
     CONF_EVENTS,
     CONF_EXTRA_ATTRIBUTES,
@@ -60,7 +62,6 @@ from .const import (
     CONF_REFRESH,
     CONF_START,
     CONF_START_OFFSET,
-    CONF_START_TEMPLATE,
     DEFAULT_ERROR_ICON,
     DEFAULT_ICON,
     DEFAULT_NAME,
@@ -100,15 +101,14 @@ PLATFORM_SCHEMA = PLATFORM_SCHEMA.extend(
             vol.All(
                 {
                     vol.Optional(CONF_START): TimeSchema,
-                    cv.deprecated(CONF_START_TEMPLATE, CONF_START): TimeSchema,
-                    vol.Optional(CONF_START_OFFSET): int,
+                    vol.Optional(CONF_START_OFFSET): vol.Any(cv.template, float),
                     vol.Optional(CONF_END): TimeSchema,
-                    cv.deprecated(CONF_END_TEMPLATE, CONF_END): TimeSchema,
-                    vol.Optional(CONF_END_OFFSET): int,
+                    vol.Optional(CONF_END_OFFSET): vol.Any(cv.template, float),
                     vol.Optional(CONF_STATE): vol.Any(cv.template, cv.string),
                     vol.Optional(CONF_COMMENT): cv.string,
                     vol.Optional(CONF_CONDITION): _CONDITION_SCHEMA,
                     vol.Optional(CONF_ICON): IconSchema,
+                    vol.Optional(CONF_ALLOW_WRAP): cv.boolean,
                     # allow extra keys - for extra attributes
                     vol.Optional(str): vol.Any(cv.template, AnyData),
                 },
@@ -120,6 +120,7 @@ PLATFORM_SCHEMA = PLATFORM_SCHEMA.extend(
         vol.Optional(CONF_ICON): IconSchema,
         vol.Optional(CONF_ERROR_ICON, default=DEFAULT_ERROR_ICON): IconSchema,
         vol.Optional(CONF_MINUTES_TO_REFRESH_ON_ERROR, default=5): cv.positive_int,
+        vol.Optional(CONF_ALLOW_WRAP, default=False): cv.boolean,
         vol.Optional(CONF_EXTRA_ATTRIBUTES): {cv.string: vol.Any(cv.template, AnyData)},
     },
 )
@@ -188,15 +189,17 @@ class Override(dict):
             x = Override(
                 d.get("id"),
                 d.get("state"),
-                dt.parse_time(d.get("start")),
-                dt.parse_time(d.get("end")),
+                # start/end are datetime.time's - no need to parse - see #166
+                d.get("start"),
+                d.get("end"),
+                # this is quite confusing, because this gets converted to a string and needs to be parsed - see #188
                 dt.parse_datetime(d.get("expires")),
                 d.get("icon"),
                 extra,
             )
             return x
 
-        except (ValueError, KeyError):
+        except (ValueError, KeyError, TypeError):
             _LOGGER.error(f"could not reconstruct saved override: {d}")
             return None
 
@@ -232,10 +235,10 @@ async def async_setup_platform(
     await async_setup_reload_service(hass, DOMAIN, PLATFORMS)
     await async_setup_services(hass)
 
-    name = config.get(CONF_NAME)
-    data = ScheduleSensorData(name, hass, config)
+    data = ScheduleSensorData(hass, config)
     await data.process_events()
 
+    name = config.get(CONF_NAME)
     entity = ScheduleSensor(hass, name, data, config)
     async_add_entities([entity], True)
 
@@ -260,8 +263,7 @@ async def async_setup_services(hass: HomeAssistant):
             await target_device.async_recalculate()
             update_tasks.append(target_device.async_update_ha_state(True))
 
-        if update_tasks:
-            await asyncio.wait(update_tasks)
+        _ = [await asyncio.create_task(coro) for coro in update_tasks]
 
     async def async_set_override_service_handler(service):
         target_devices = get_target_devices(service)
@@ -278,8 +280,7 @@ async def async_setup_services(hass: HomeAssistant):
             )
             update_tasks.append(target_device.async_update_ha_state(True))
 
-        if update_tasks:
-            await asyncio.wait(update_tasks)
+        _ = [await asyncio.create_task(coro) for coro in update_tasks]
 
     async def async_remove_override_service_handler(service):
         target_devices = get_target_devices(service)
@@ -290,8 +291,7 @@ async def async_setup_services(hass: HomeAssistant):
             )
             update_tasks.append(target_device.async_update_ha_state(True))
 
-        if update_tasks:
-            await asyncio.wait(update_tasks)
+        _ = [await asyncio.create_task(coro) for coro in update_tasks]
 
     async def async_clear_overrides_service_handler(service):
         target_devices = get_target_devices(service)
@@ -300,8 +300,7 @@ async def async_setup_services(hass: HomeAssistant):
             await target_device.async_clear_overrides()
             update_tasks.append(target_device.async_update_ha_state(True))
 
-        if update_tasks:
-            await asyncio.wait(update_tasks)
+        _ = [await asyncio.create_task(coro) for coro in update_tasks]
 
     async def async_turn_on_handler(service):
         target_devices = get_target_devices(service)
@@ -319,8 +318,7 @@ async def async_setup_services(hass: HomeAssistant):
                 )
                 update_tasks.append(target_device.async_update_ha_state(True))
 
-        if update_tasks:
-            await asyncio.wait(update_tasks)
+        _ = [await asyncio.create_task(coro) for coro in update_tasks]
 
     async def async_turn_off_handler(service):
         target_devices = get_target_devices(service)
@@ -338,8 +336,7 @@ async def async_setup_services(hass: HomeAssistant):
                 )
                 update_tasks.append(target_device.async_update_ha_state(True))
 
-        if update_tasks:
-            await asyncio.wait(update_tasks)
+        _ = [await asyncio.create_task(coro) for coro in update_tasks]
 
     async def async_toggle_handler(service):
         target_devices = get_target_devices(service)
@@ -367,8 +364,7 @@ async def async_setup_services(hass: HomeAssistant):
                     )
                     update_tasks.append(target_device.async_update_ha_state(True))
 
-        if update_tasks:
-            await asyncio.wait(update_tasks)
+        _ = [await asyncio.create_task(coro) for coro in update_tasks]
 
     hass.services.async_register(
         DOMAIN,
@@ -559,6 +555,8 @@ class ScheduleSensor(SensorEntity, RestoreEntity):
         # overrides are only saved every 15 minutes
         # see STATE_DUMP_INTERVAL in restore_state.py -- is there any way to force this when an override is added/removed?
         _LOGGER.debug(f"{self.name}: extra_restore_state_data = {self.data.overrides}")
+        # note: self.data.overrides is saved in native format, without any explicit conversions, but HA is still converting it to text somewhere
+        # this is not what the pytest-homeassistant-custom-component does...
         return ScheduleStateExtraStoredData(self.data.overrides)
 
     async def async_update_config(self, override_list: list[Override]) -> None:
@@ -581,7 +579,7 @@ class ScheduleSensor(SensorEntity, RestoreEntity):
 class ScheduleSensorData:
     """The class for handling the state computation."""
 
-    def __init__(self, name, hass, config):
+    def __init__(self, hass, config):
         """Initialize the data object."""
         self.name = config.get(CONF_NAME)
         self.value = None
@@ -635,6 +633,8 @@ class ScheduleSensorData:
         ).result
         self.known_states.add(self.default_state)
 
+        allow_wrap_global = self.config.get(CONF_ALLOW_WRAP, False)
+
         # TODO we should handle 'icon' the same as other extra attributes
         self._attr_keys = [k for k in self.extra_attributes.keys()]
         states = {}
@@ -674,30 +674,22 @@ class ScheduleSensorData:
             else:
                 force_refresh = new_refresh_time
 
-            variables = {}
-            if cond is not None:
-                _LOGGER.debug(f"{self.name}: condition {cond}")
-                cond_func = await _async_process_if(self.hass, self.name, cond)
-                for conf in cond_func.config:
-                    referenced = condition.async_extract_entities(conf)
-                    if len(referenced):
-                        _LOGGER.debug(f"{self.name}: ... entities used: {referenced}")
-                    self.entities.update(referenced)
-
-                cond_result = cond_func(variables)
-                if cond_result is False:
-                    _LOGGER.debug(
-                        f"{self.name}: {state}: condition was not satisfied - skipping"
-                    )
-                    continue
-                elif cond_result is None:
-                    # There was a problem evaluating the condition - force a refresh
-                    self.force_refresh = force_refresh
-                    self.error_states.add(state)
-                    _LOGGER.error(
-                        f"{self.name}: {state}: error evaluating condition - skipping, will try again in {self.minutes_to_refresh_on_error} minutes"
-                    )
-                    continue
+            cond_result = await _async_process_cond(
+                self.hass, self.name, cond, self.entities
+            )
+            if cond_result is False:
+                _LOGGER.debug(
+                    f"{self.name}: {state}: condition was not satisfied - skipping"
+                )
+                continue
+            elif cond_result is None:
+                # There was a problem evaluating the condition - force a refresh
+                self.force_refresh = force_refresh
+                self.error_states.add(state)
+                _LOGGER.error(
+                    f"{self.name}: {state}: error evaluating condition - skipping, will try again in {self.minutes_to_refresh_on_error} minutes"
+                )
+                continue
 
             start = await self.get_start(event)
             end = None if start is None else await self.get_end(event)
@@ -706,25 +698,44 @@ class ScheduleSensorData:
                 self.force_refresh = force_refresh
                 self.error_states.add(state)
                 _LOGGER.error(
-                    f"{self.name}: {state}: error with event definition - skipping, will try again in {self.minutes_to_refresh_on_error} minutes"
+                    f"{self.name}: {state}: error with start/end definition - skipping, will try again in {self.minutes_to_refresh_on_error} minutes"
                 )
                 continue
 
-            # apply start/end offsets, if any
-            start = self.apply_offset(start, event.get(CONF_START_OFFSET, 0))
-            end = self.apply_offset(end, event.get(CONF_END_OFFSET, 0))
+            # apply start/end offsets, if any - these can be templates
+            start_offset = None
+            end_offset = None
+            offset_eval = self.evaluate_template(event, CONF_START_OFFSET, default=0)
+            if offset_eval.success:
+                with suppress(ValueError):
+                    start_offset = float(offset_eval.result)
 
-            if start > end:
+            offset_eval = self.evaluate_template(event, CONF_END_OFFSET, default=0)
+            if offset_eval.success:
+                with suppress(ValueError):
+                    end_offset = float(offset_eval.result)
+
+            if None in (start_offset, end_offset):
+                # There was a problem evaluating the template - force a refresh
+                self.force_refresh = force_refresh
                 self.error_states.add(state)
                 _LOGGER.error(
-                    f"{self.name}: {state}: error with event definition - start:{start} > end:{end} - skipping"
+                    f"{self.name}: {state}: error with offset definition - skipping, will try again in {self.minutes_to_refresh_on_error} minutes"
                 )
                 continue
 
-            elif start == end:
-                _LOGGER.warning(
-                    f"{self.name}: {state}: no duration - start and end:{start} - skipping"
-                )
+            start = self.apply_offset(start, start_offset)
+            end = self.apply_offset(end, end_offset)
+
+            # is wrapping allowed for this event? (default it the global setting)
+            allow_wrap = event.get(CONF_ALLOW_WRAP, allow_wrap_global)
+
+            # get the interval(s) for this event
+            intervals, error = self._get_intervals(start, end, allow_wrap)
+
+            if error is not None:
+                self.error_states.add(state)
+                _LOGGER.error(f"{self.name}: {state}: {error} - skipping")
                 continue
 
             icon = self.evaluate_template(
@@ -735,13 +746,29 @@ class ScheduleSensorData:
                 self.icon_map[state] = icon.result
 
             # Layer on the new interval to the schedule
-            interval = P.closedopen(start, end)
-            self._add_interval(states, attrs, event, state, interval)
+            for interval in intervals:
+                self._add_interval(states, attrs, event, state, interval)
 
         _LOGGER.info(f"{self.name}:\n{pformat(states)}\n{pformat(attrs)}")
         self._states = states
         self._custom_attributes = attrs
         self._refresh_time = dt.as_local(dt_now())
+
+    def _get_intervals(self, start, end, allow_wrap):
+        ret = []
+        error = None
+
+        if start < end:
+            ret.append(P.closedopen(start, end))
+        elif start == end:
+            pass
+        elif allow_wrap:
+            ret.append(P.closedopen(start, time.max))
+            ret.append(P.closedopen(time.min, end))
+        else:
+            error = f"error with event definition - start:{start} > end:{end}"
+
+        return ret, error
 
     def _add_interval(self, states, attrs, event, state, interval) -> None:
         self._handle_layers(states, state, interval)
@@ -803,7 +830,6 @@ class ScheduleSensorData:
         template_eval = self.evaluate_template(
             event,
             CONF_START,
-            CONF_START_TEMPLATE,
             time.min,
         )
         if not template_eval.success:
@@ -820,7 +846,6 @@ class ScheduleSensorData:
         template_eval = self.evaluate_template(
             event,
             CONF_END,
-            CONF_END_TEMPLATE,
             time.max,
         )
         if not template_eval.success:
@@ -843,18 +868,10 @@ class ScheduleSensorData:
         self,
         obj,
         prefix: str,
-        prefixt: str = None,
         default=None,
         track_entities: bool = True,
     ) -> TemplateResult:
         value = obj.get(prefix, None)
-        value_template = obj.get(prefixt, None)
-
-        # 'thing' and 'thing'_template are now aliases, and it is only allowed to provide one or the other,
-        # so we can safely combine them knowing that at least one of them will be 'None'
-        value = value or value_template
-        del value_template
-        del prefixt
 
         debugmsg = ""
 
@@ -901,38 +918,30 @@ class ScheduleSensorData:
         if not isinstance(value, str):
             return value
 
-        try:
+        with suppress((ValueError, TypeError)):
             date = dt.parse_datetime(value)
             if date is not None:
                 _LOGGER.debug(f"{self.name}: ...... found datetime: {date}")
                 tme = dt.as_local(date).time()
                 return tme
-        except (ValueError, TypeError):
-            pass
 
-        try:
+        with suppress((ValueError, TypeError)):
             date = datetime.fromisoformat(value)
             _LOGGER.debug(f"{self.name}: ...... found isoformat date: {date}")
             tme = dt.as_local(date).time()
             return tme
-        except (ValueError, TypeError):
-            pass
 
-        try:
+        with suppress((ValueError, TypeError)):
             tme = dt.parse_time(value)
             if tme is not None:
                 _LOGGER.debug(f"{self.name}: ...... found time: {tme}")
                 return localtime_from_time(tme)
-        except (ValueError, TypeError):
-            pass
 
-        try:
+        with suppress((ValueError, TypeError)):
             tme = time.fromisoformat(value)
             if tme is not None:
                 _LOGGER.debug(f"{self.name}: ...... found isoformat time: {tme}")
                 return localtime_from_time(tme)
-        except (ValueError, TypeError):
-            pass
 
         try:
             date = dt.utc_from_timestamp(int(float(value)))
@@ -1016,7 +1025,15 @@ class ScheduleSensorData:
 
     def set_override(self, id, state, start, end, duration, icon, extra_attributes):
         now = dt.as_local(dt_now())
-        allow_split = True
+
+        # Unlike standard events, overrides do not have an "allow_wrap" attribute.
+        # Wrapping is generally permitted by default for overrides, unless both
+        # start and end are provided, in which case the global "allow_wrap" setting
+        # for the sensor is used.
+        allow_wrap = True
+
+        # You could end up with weird/unexpected results if the duration wrapped more than
+        # one day, which is why the maximum is set to 1439 minutes (24 hours minus 1 minute).
 
         # FIXME weed out invalid cases using Voluptuous schema
         if start is None and end is None and duration is None:
@@ -1048,7 +1065,7 @@ class ScheduleSensorData:
             # don't try to fix wraparounds in this case, where both start and end times were provided
             start = next_time(now, start)
             end = next_time(now, end)
-            allow_split = False
+            allow_wrap = self.config.get(CONF_ALLOW_WRAP, False)
         else:
             # 100 --> start to ???
             _LOGGER.error("override failed: no duration provided")
@@ -1065,42 +1082,27 @@ class ScheduleSensorData:
                 v = extra_attributes.get(attr, None)
                 if v is not None:
                     ex_attrs[attr] = v
+                else:
+                    _LOGGER.debug(f"skipping {attr} because value = {v}")
 
-                for attr in extra_attributes.keys():
-                    if attr not in self._attr_keys:
-                        _LOGGER.error(
-                            f"{self.name}: ignoring unknown attribute '{attr}' in service call"
-                        )
-                extra_attributes = ex_attrs
+            for attr in extra_attributes.keys():
+                if attr not in self._attr_keys:
+                    _LOGGER.error(
+                        f"{self.name}: ignoring unknown attribute '{attr}' in service call"
+                    )
+
+            extra_attributes = ex_attrs
+
         else:
             extra_attributes = {}
 
-        if not (start > end):
+        if end > start or (allow_wrap and start > end):
             ev = Override(id, state, start, end, expires, icon, extra_attributes)
             self._add_or_edit_override(id, ev)
-
-        elif start > end and allow_split:
-            # split into two overrides if there is a wraparound (eg: 23:55 to 00:10)
-            # note: this will create 2 overrides with the same id; this is the only way
-            # it can happen
-            ev = Override(
-                id,
-                state,
-                start,
-                time.max,
-                start_of_next_day(now),
-                icon,
-                extra_attributes,
-            )
-            _LOGGER.info(f"adding override: {ev} (split)")
-            self._add_or_edit_override(id, ev)
-            start = time.min
-            if end > start:
-                # weed out degenerate case where start==end, which happens if original end=00:00:00
-                ev = Override(id, state, start, end, expires, icon, extra_attributes)
-                self._add_or_edit_override(id, ev, expect_duplicate_id=True)
+            if allow_wrap:
+                ev[CONF_ALLOW_WRAP] = True
         else:
-            _LOGGER.error(f"override failed: start ({start}) > end ({end})")
+            _LOGGER.error(f"override failed: start ({start}) & end ({end})")
             return False
 
         return True
@@ -1179,16 +1181,7 @@ def localtime_from_time(tme: time) -> time:
 
 def datetime_from_time(tme: time) -> datetime:
     date = dt_now()
-    date = datetime(
-        date.year,
-        date.month,
-        date.day,
-        tme.hour,
-        tme.minute,
-        tme.second,
-        tme.microsecond,
-        date.tzinfo,
-    )
+    date = datetime.combine(date, tme, date.tzinfo)
     return dt.as_local(date)
 
 
@@ -1202,6 +1195,24 @@ def friendly_time(t):
     elif t == time.max:
         return "midnight"
     return t.strftime(locale.nl_langinfo(locale.T_FMT))
+
+
+async def _async_process_cond(hass, name, cond, entities):
+    if cond is None:
+        # no condition provided - always evaluates to True
+        return True
+
+    _LOGGER.debug(f"{name}: condition {cond}")
+    variables = {}
+    cond_func = await _async_process_if(hass, name, cond)
+    for conf in cond_func.config:
+        referenced = condition.async_extract_entities(conf)
+        if len(referenced):
+            _LOGGER.debug(f"{name}: ... entities used: {referenced}")
+        entities.update(referenced)
+
+    cond_result = cond_func(variables)
+    return cond_result
 
 
 async def _async_process_if(hass, name, if_configs):

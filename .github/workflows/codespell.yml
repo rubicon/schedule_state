@@ -1,16 +1,20 @@
 name: codespell
  
 on:
-  pull_request:
   push:
+    branches:
+    - main
+  pull_request:
+    branches:
+    - main
 
 jobs:
   style:
     runs-on: "ubuntu-latest"
     name: Check spelling
     steps:
-        - uses: "actions/checkout@v2"
-        - uses: "actions/setup-python@v1"
+        - uses: "actions/checkout@v4"
+        - uses: "actions/setup-python@v5"
           with:
             python-version: "3.x"
         - run: python3 -m pip install codespell
